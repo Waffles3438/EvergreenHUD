@@ -82,7 +82,7 @@ import kotlin.math.cos
 import kotlin.time.Duration.Companion.milliseconds
 
 private const val ICON = 18f
-private const val LINE_GAP = 2f
+private const val LINE_GAP = 1f
 private const val FONT_SIZE = 8f
 private const val OUTLINE_INSET = 1f
 
