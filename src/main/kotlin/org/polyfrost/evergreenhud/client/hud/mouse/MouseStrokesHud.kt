@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud.mouse
 
 import androidx.compose.runtime.Composable
@@ -6,8 +8,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
 import org.polyfrost.compose.composables.PolyModifier
 import org.polyfrost.compose.composables.clip
 import org.polyfrost.compose.composables.size
@@ -16,12 +18,15 @@ import org.polyfrost.compose.render.PolyRenderer
 import org.polyfrost.compose.render.RenderContext
 import org.polyfrost.evergreenhud.client.hud.shape.oval
 import org.polyfrost.evergreenhud.client.utils.Facing
-import org.polyfrost.evergreenhud.client.utils.copy
+import org.polyfrost.oneconfig.api.config.v1.copy
 import org.polyfrost.oneconfig.api.config.v1.annotations.Color
 import org.polyfrost.oneconfig.api.config.v1.annotations.Dropdown
 import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
+import org.polyfrost.oneconfig.api.event.v1.eventHandler
+import org.polyfrost.oneconfig.api.event.v1.events.PlayerTurnEvent
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.utils.v1.dsl.mc
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -159,6 +164,15 @@ class MouseStrokesHud : Hud(
     @Transient
     private var polyline = FloatArray(0)
 
+    @Transient
+    private var xs = FloatArray(0)
+
+    @Transient
+    private var ys = FloatArray(0)
+
+    @Transient
+    private var ages = FloatArray(0)
+
     private var _staticW = mutableStateOf(DEFAULT_SIDE)
     override var staticW: Float get() = _staticW.value; set(v) { _staticW.value = v }
 
@@ -198,11 +212,7 @@ class MouseStrokesHud : Hud(
         lastRawYaw = Double.NaN
     }
 
-    override fun clone(): Hud = (super.clone() as MouseStrokesHud).apply {
-        _staticW = mutableStateOf(this@MouseStrokesHud.staticW)
-        _staticH = mutableStateOf(this@MouseStrokesHud.staticH)
-        dotColor = dotColor.copy()
-        snakeHeadColor = snakeHeadColor.copy()
+    override fun onCloned() {
         trail = ArrayDeque()
     }
 
@@ -226,8 +236,8 @@ class MouseStrokesHud : Hud(
         }
 
         val modifier = hudBackground(PolyModifier.size(scaledWidth, scaledHeight))
-        PolyBox(modifier = modifier.clip(bgRadius)) {
-            PolyCanvas(PolyModifier.size(scaledWidth, scaledHeight)) { x, y, w, h ->
+        NodeBox(modifier = modifier.clip(bgRadius)) {
+            NodeCanvas(PolyModifier.size(scaledWidth, scaledHeight)) { x, y, w, h ->
                 frame.longValue
                 draw(x, y, w, h)
             }
@@ -304,7 +314,7 @@ class MouseStrokesHud : Hud(
         val centreY = y + h / 2f
         val usableX = (w / 2f - radius).coerceAtLeast(0f)
         val usableY = (h / 2f - radius).coerceAtLeast(0f)
-        val fg = PolyColor(textColor, textChroma, textChromaSpeed)
+        val fg = textPolyColor
         val head = trail.lastOrNull()
         val dotX = if (isReal) head?.x ?: 0f else PREVIEW_X
         val dotY = if (isReal) head?.y ?: 0f else PREVIEW_Y
@@ -340,9 +350,14 @@ class MouseStrokesHud : Hud(
 
         val oldest = trail.first().timeMs
         val span = (trail.last().timeMs - oldest).toFloat()
-        val xs = FloatArray(trail.size)
-        val ys = FloatArray(trail.size)
-        val ages = FloatArray(trail.size)
+        if (xs.size < trail.size) {
+            xs = FloatArray(trail.size)
+            ys = FloatArray(trail.size)
+            ages = FloatArray(trail.size)
+        }
+        val xs = xs
+        val ys = ys
+        val ages = ages
         var count = 0
 
         for (point in trail) {
@@ -380,6 +395,7 @@ class MouseStrokesHud : Hud(
             var size = 2
             for (i in start until end) size = appendSpline(polyline, size, xs, ys, i, count)
             val segmentColor = color.withAlphaScaled((step + 1).toFloat() / FADE_STEPS)
+            // strokePolyline has no length parameter and reads points.size, so it needs an exact-size array.
             renderer.strokePolyline(polyline.copyOf(size), false, segmentColor.argb, width, PolyRenderer.CAP_ROUND, PolyRenderer.JOIN_ROUND)
 
             start = end
@@ -415,10 +431,11 @@ object MouseTurnTracker {
     var pitch = 0.0
         private set
 
-    @JvmStatic
-    fun turn(deltaYaw: Double, deltaPitch: Double) {
-        yaw += deltaYaw
-        pitch += deltaPitch
+    fun initialize() {
+        eventHandler { event: PlayerTurnEvent ->
+            yaw += event.yawDelta
+            pitch += event.pitchDelta
+        }
     }
 }
 

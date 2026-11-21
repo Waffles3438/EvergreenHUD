@@ -1,19 +1,22 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud.shape
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
 import org.polyfrost.compose.composables.PolyModifier
 import org.polyfrost.compose.composables.size
 import org.polyfrost.compose.render.PolyColor
 import org.polyfrost.compose.render.RenderContext
-import org.polyfrost.evergreenhud.client.utils.copy
+import org.polyfrost.oneconfig.api.config.v1.copy
 import org.polyfrost.oneconfig.api.config.v1.annotations.Color
 import org.polyfrost.oneconfig.api.config.v1.annotations.Dropdown
 import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 
 class ShapeHud : Hud(
     id = "shape.json",
@@ -109,20 +112,16 @@ class ShapeHud : Hud(
         cachedKey = null
     }
 
-    override fun clone(): Hud = (super.clone() as ShapeHud).apply {
-        _staticW = mutableStateOf(this@ShapeHud.staticW)
-        _staticH = mutableStateOf(this@ShapeHud.staticH)
+    override fun onCloned() {
         cachedPath = null
         cachedKey = null
-        color = color.copy()
-        outlineColor = outlineColor.copy()
     }
 
     @Composable
     override fun Content() {
         val sizeModifier = PolyModifier.size(scaledWidth, scaledHeight)
         if (showBackground) {
-            PolyBox(modifier = hudBackground(sizeModifier)) {
+            NodeBox(modifier = hudBackground(sizeModifier)) {
                 Shape(sizeModifier)
             }
         } else {
@@ -132,7 +131,7 @@ class ShapeHud : Hud(
 
     @Composable
     private fun Shape(modifier: PolyModifier) {
-        PolyCanvas(modifier) { x, y, width, height -> draw(x, y, width, height) }
+        NodeCanvas(modifier) { x, y, width, height -> draw(x, y, width, height) }
     }
 
     private fun RenderContext.draw(x: Float, y: Float, width: Float, height: Float) {

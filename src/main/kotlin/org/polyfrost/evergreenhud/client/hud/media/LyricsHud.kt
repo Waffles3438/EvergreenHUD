@@ -1,9 +1,11 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud.media
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
 import org.polyfrost.compose.composables.PolyModifier
 import org.polyfrost.compose.composables.padding
 import org.polyfrost.compose.composables.size
@@ -12,7 +14,7 @@ import org.polyfrost.compose.render.PolyBitmap
 import org.polyfrost.compose.render.PolyColor
 import org.polyfrost.compose.render.RenderContext
 import org.polyfrost.evergreenhud.client.utils.applyCase
-import org.polyfrost.evergreenhud.client.utils.copy
+import org.polyfrost.oneconfig.api.config.v1.copy
 import org.polyfrost.evergreenhud.client.utils.media.KUGOU
 import org.polyfrost.evergreenhud.client.utils.media.LRCLIB
 import org.polyfrost.evergreenhud.client.utils.media.LRC_RED
@@ -23,7 +25,9 @@ import org.polyfrost.evergreenhud.client.utils.media.MediaInfo
 import org.polyfrost.evergreenhud.client.utils.media.MediaService
 import org.polyfrost.evergreenhud.client.utils.media.PROVIDERS
 import org.polyfrost.evergreenhud.client.utils.media.parseLrc
+import org.polyfrost.oneconfig.api.config.v1.Properties.ktProperty
 import org.polyfrost.oneconfig.api.config.v1.Property
+import org.polyfrost.oneconfig.api.config.v1.Tree
 import org.polyfrost.oneconfig.api.config.v1.annotations.Color
 import org.polyfrost.oneconfig.api.config.v1.annotations.DraggableList
 import org.polyfrost.oneconfig.api.config.v1.annotations.Dropdown
@@ -32,9 +36,12 @@ import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.hud.v1.HudAnchor
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.hud.v1.HudManager
 import org.polyfrost.oneconfig.api.platform.v1.Platform
 import java.util.IdentityHashMap
+import java.util.function.Supplier
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
@@ -51,6 +58,7 @@ private const val ROW_HEIGHT = 11f
 private const val LINE_GAP = 5f
 private const val MIN_WIDTH = 60f
 private const val MAX_WIDTH = 220f
+private const val CARD_GAP = 4f
 private const val FRAME_MS = 16L
 
 private const val FADE_MS = 320f
@@ -268,6 +276,16 @@ class LyricsHud : Hud(
     @Transient
     private var acquired = false
 
+    @Transient
+    private var offscreen = false
+
+    @Transient
+    private var hiddenLookup: MediaInfo? = null
+
+    private var mediaAnchorChecked = false
+
+    private var mediaAnchorId = ""
+
     override fun defaultPosition(): Pair<Float, Float> =
         (HudManager.guiScreenWidth - scaledWidth) / 2f to HudManager.guiScreenHeight * 0.62f
 
@@ -290,10 +308,56 @@ class LyricsHud : Hud(
         if (isReal) {
             applyProviders()
             addCallback("providers") { applyProviders() }
+            addCallback("matchMediaWidth") { if (matchMediaWidth) mediaAnchorChecked = false }
         }
         if (!isReal || acquired) return
         acquired = true
         MediaService.acquire()
+    }
+
+    override fun addToSerialized(tree: Tree) {
+        super.addToSerialized(tree)
+        tree.set("mediaAnchorChecked", ktProperty(this::mediaAnchorChecked).addDisplayCondition(Supplier { Property.Display.HIDDEN }))
+        tree.set("mediaAnchorId", ktProperty(this::mediaAnchorId).addDisplayCondition(Supplier { Property.Display.HIDDEN }))
+    }
+
+    private fun anchorToMediaCard() {
+        if (isStatic) return
+        if (!matchMediaWidth || isAnchored) {
+            mediaAnchorChecked = true
+            return
+        }
+        val cx = x + scaledWidth / 2f
+        val cy = y + scaledHeight / 2f
+        val card = HudManager.getHudsOfType(MediaHud::class.java)
+            .filter { !it.hidden && it.tree != null }
+            .minByOrNull { (it.x + it.scaledWidth / 2f - cx).pow(2) + (it.y + it.scaledHeight / 2f - cy).pow(2) }
+            ?: return
+        val snap = isAtDefaultPosition
+        val below = if (snap) card.y + card.scaledHeight + CARD_GAP + scaledHeight <= HudManager.guiScreenHeight
+        else cy >= card.y + card.scaledHeight / 2f
+        val pivot = if (card.isAnchored) card.effectiveSelfAnchorPoint else card.effectiveGrowthAnchor
+        val (top, bottom) = when (pivot) {
+            HudAnchor.TopLeft, HudAnchor.Left, HudAnchor.BottomLeft -> HudAnchor.TopLeft to HudAnchor.BottomLeft
+            HudAnchor.TopRight, HudAnchor.Right, HudAnchor.BottomRight -> HudAnchor.TopRight to HudAnchor.BottomRight
+            else -> HudAnchor.Top to HudAnchor.Bottom
+        }
+        if (below) anchorTo(card, bottom, top) else anchorTo(card, top, bottom)
+        if (snap) {
+            anchorOffsetX = 0f
+            anchorOffsetY = if (below) CARD_GAP else -CARD_GAP
+            setAbsolutePosition(x, y)
+        }
+        mediaAnchorId = anchorTargetId
+        mediaAnchorChecked = true
+        save()
+    }
+
+    private fun rearmIfCardGone() {
+        if (mediaAnchorId.isEmpty() || anchorTargetId == mediaAnchorId) return
+        if (anchorTargetId.isEmpty() && HudManager.instanceById(mediaAnchorId) == null) mediaAnchorChecked = false
+        mediaAnchorId = ""
+        save()
     }
 
     private fun applyProviders() {
@@ -310,13 +374,25 @@ class LyricsHud : Hud(
         acquired = false
     }
 
-    override fun updateFrequency(): Long = FRAME_MS.milliseconds.inWholeNanoseconds
+    override fun updateFrequency(): Long = if (offscreen && screenOpen()) -1L else FRAME_MS.milliseconds.inWholeNanoseconds
 
     override fun shouldShow(): Boolean = frame.value != null && (!onlyInGuis || screenOpen())
 
     override fun update(): Boolean {
+        if (isReal) rearmIfCardGone()
+        if (isReal && !mediaAnchorChecked && !HudManager.isEditing && MediaHud.shownWidth > 0f && frame.value != null) anchorToMediaCard()
         val now = System.currentTimeMillis()
-        if (onlyInGuis && !screenOpen()) popStart = now
+        offscreen = onlyInGuis && !screenOpen()
+        if (offscreen) {
+            popStart = now
+            shownHeight = 0f
+            val info = MediaService.current
+            if (isReal && info !== hiddenLookup) {
+                hiddenLookup = info
+                LyricsService.lyricsFor(info)
+            }
+            return false
+        }
         val next = buildFrame(now)
         val changed = next != frame.value
         frame.value = next
@@ -489,7 +565,7 @@ class LyricsHud : Hud(
             TEXT_ALBUM_ART -> albumColor(average = false)
             TEXT_ALBUM_AVERAGE -> albumColor(average = true)
             else -> null
-        } ?: PolyColor(textColor, textChroma, textChromaSpeed)
+        } ?: textPolyColor
         val sung = when (highlightSource) {
             HIGHLIGHT_ACCENT -> accentColor
             HIGHLIGHT_ALBUM_ART -> albumColor(average = false) ?: text
@@ -547,8 +623,8 @@ class LyricsHud : Hud(
         val sized = if (isStatic) box.size(staticW, staticH) else box
         val bounds = boxBounds(current, scale)
         val inset = INSET * scale
-        PolyBox(modifier = sized.padding(padLeft + inset, padTop + inset, padRight + inset, padBottom + inset)) {
-            PolyCanvas(PolyModifier.size(current.width * scale, current.height * scale)) { x, y, _, h ->
+        NodeBox(modifier = sized.padding(padLeft + inset, padTop + inset, padRight + inset, padBottom + inset)) {
+            NodeCanvas(PolyModifier.size(current.width * scale, current.height * scale)) { x, y, _, h ->
                 val unit = h / current.height.coerceAtLeast(0.01f)
                 save()
                 translate(x, y)
@@ -581,7 +657,7 @@ class LyricsHud : Hud(
         return MediaCardBackdrop(
             bounds = bounds,
             radius = if (showColor || artBackground) bgRadius / scale else 0f,
-            color = if (showColor) PolyColor(bgColor, bgChroma, bgChromaSpeed) else null,
+            color = if (showColor) bgPolyColor else null,
             art = current.art,
             artBlur = artBackgroundBlur,
             artAlpha = artBackgroundOpacity / 100f,
@@ -590,23 +666,19 @@ class LyricsHud : Hud(
         )
     }
 
-    override fun clone(): Hud = (super.clone() as LyricsHud).also {
-        it.unsungColor = unsungColor.copy()
-        it.otherColor = otherColor.copy()
-        it.accentColor = accentColor.copy()
-        it._staticW = mutableStateOf(staticW)
-        it._staticH = mutableStateOf(staticH)
-        it.frame = mutableStateOf(null)
-        it.layouts = IdentityHashMap()
-        it.layoutKey = null
-        it.songWidth = 0f
-        it.songWidthKey = null
-        it.shownHeight = 0f
-        it.shownPosition = 0.0
-        it.shownAt = 0L
-        it.shownTitle = null
-        it.popStart = 0L
-        it.acquired = false
+    override fun onCloned() {
+        frame = mutableStateOf(null)
+        layouts = IdentityHashMap()
+        layoutKey = null
+        songWidth = 0f
+        songWidthKey = null
+        shownHeight = 0f
+        shownPosition = 0.0
+        shownAt = 0L
+        shownTitle = null
+        popStart = 0L
+        acquired = false
+        offscreen = false
     }
 }
 
@@ -632,12 +704,12 @@ private fun RenderContext.drawGlyph(mark: GlyphMark, label: Label, plain: Label)
     val x = -mark.width / 2f
     if (mark.glow > 0f) {
         val halo = mark.sung.withAlphaScale(GLOW_ALPHA * mark.glow)
-        if (halo.visible) for ((dx, dy) in GLOW_OFFSETS) with(plain) { draw(mark.text, x + dx, dy, PolyColor(halo)) }
+        if (halo.visible) for ((dx, dy) in GLOW_OFFSETS) with(plain) { draw(mark.text, x + dx, dy, halo) }
     }
-    if (mark.progress < 1f && mark.base.visible) with(label) { draw(mark.text, x, 0f, PolyColor(mark.base)) }
+    if (mark.progress < 1f && mark.base.visible) with(label) { draw(mark.text, x, 0f, mark.base) }
     if (mark.progress <= 0f || !mark.sung.visible) return
     if (mark.progress >= 1f) {
-        with(label) { draw(mark.text, x, 0f, PolyColor(mark.sung)) }
+        with(label) { draw(mark.text, x, 0f, mark.sung) }
         return
     }
     val edge = -FEATHER + (mark.width + FEATHER) * mark.progress
@@ -647,7 +719,7 @@ private fun RenderContext.drawGlyph(mark: GlyphMark, label: Label, plain: Label)
         if (right <= left || !color.visible) return
         save()
         clipRect(x + left, -ROW_HEIGHT * 2f, right - left, ROW_HEIGHT * 3f)
-        with(plain) { draw(mark.text, x, 0f, PolyColor(color)) }
+        with(plain) { draw(mark.text, x, 0f, color) }
         restore()
     }
     slice(-1f, edge, mark.sung)

@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud.keystrokes
 
 import androidx.compose.runtime.Composable
@@ -7,26 +9,26 @@ import com.mojang.blaze3d.platform.InputConstants
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import net.minecraft.client.KeyMapping
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
-import org.polyfrost.compose.composables.PolyColumn
-import org.polyfrost.compose.composables.PolyMcText
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
+import org.polyfrost.compose.composables.NodeColumn
+import org.polyfrost.compose.composables.NodeMcText
+import org.polyfrost.compose.composables.NodeRow
+import org.polyfrost.compose.composables.NodeText
 import org.polyfrost.compose.composables.PolyModifier
-import org.polyfrost.compose.composables.PolyRow
-import org.polyfrost.compose.composables.PolyText
 import org.polyfrost.compose.composables.align
 import org.polyfrost.compose.composables.margin
 import org.polyfrost.compose.composables.size
 import org.polyfrost.compose.layout.PolyAlign
 import org.polyfrost.compose.mc.McFontQueue
 import org.polyfrost.compose.render.PolyColor
+import org.polyfrost.compose.render.snappedRect
 import org.polyfrost.evergreenhud.client.utils.applyCase
-import org.polyfrost.evergreenhud.client.utils.copy
+import org.polyfrost.oneconfig.api.config.v1.copy
 import org.polyfrost.evergreenhud.client.utils.fastRemoveIfReversed
 import org.polyfrost.evergreenhud.client.utils.isHeld
 import org.polyfrost.evergreenhud.client.utils.matchesKeyCode
 import org.polyfrost.evergreenhud.client.utils.matchesMouseButton
-import org.polyfrost.evergreenhud.client.utils.snapToPixels
 import org.polyfrost.oneconfig.api.config.v1.Property
 import org.polyfrost.oneconfig.api.config.v1.annotations.Color
 import org.polyfrost.oneconfig.api.config.v1.annotations.DraggableList
@@ -42,11 +44,12 @@ import org.polyfrost.oneconfig.api.event.v1.invoke.EventHandler
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
 import org.polyfrost.oneconfig.api.platform.v1.Platform
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.ui.v1.keybind.KeyModifiers
 import org.polyfrost.oneconfig.api.ui.v1.keybind.KeybindHelper
 import org.polyfrost.oneconfig.api.ui.v1.keybind.KeybindManager
+import org.polyfrost.oneconfig.api.ui.v1.keybind.KeybindMetadata
 import org.polyfrost.oneconfig.api.ui.v1.keybind.OneConfigKeybind
-import org.polyfrost.oneconfig.internal.ui.keybind.MinecraftKeybindRegistrar
 import org.polyfrost.oneconfig.utils.v1.dsl.mc
 import kotlin.experimental.or
 import kotlin.math.abs
@@ -76,6 +79,11 @@ private const val MODE_NORMAL = 0
 private const val MODE_CUSTOM = 1
 
 private const val UNKNOWN_KEY = "?"
+
+private const val JUMP_PULSE_NS = 75_000_000L
+private const val JUMP_IDLE_NS = 1_000_000_000L
+
+private const val JUMP_HOLD_BACKDATE_NS = 100_000_000L
 
 private const val UP = "▲"
 private const val DOWN = "▼"
@@ -143,6 +151,9 @@ class KeystrokesHud : Hud(
     @Slider(title = "Spacebar Line Thickness", description = "Thickness of the spacebar line.", min = 0.5F, max = 6F, step = 0.5F)
     var spaceLineH = DEFAULT_SPACE_LINE_H
 
+    @Switch(title = "Show Each Jump", description = "While the spacebar is held, flash it once per jump instead of keeping it lit.")
+    var jumpPulse = false
+
     @Switch(title = "Per-Tick Updates", description = "Update keys once per game tick instead of in real time.")
     var perTick = false
 
@@ -193,12 +204,7 @@ class KeystrokesHud : Hud(
 
     override fun defaultPosition(): Pair<Float, Float> = 0f to 0f
 
-    override fun clone(): Hud = (super.clone() as KeystrokesHud).apply {
-        unpressedBg = unpressedBg.copy()
-        unpressedText = unpressedText.copy()
-        pressedBg = pressedBg.copy()
-        pressedText = pressedText.copy()
-        rows = rows.copyOf()
+    override fun onCloned() {
         customBind = customBind.copyWith(customBind.keyCodes?.copyOf(), customBind.mouseBtns?.copyOf(), customBind.mods)
         keys = KeyState()
         handlers = ArrayList(2)
@@ -207,7 +213,7 @@ class KeystrokesHud : Hud(
     override fun setup() {
         super.setup()
         if (isReal) {
-            tree?.getProp("customBind")?.addMetadata(MinecraftKeybindRegistrar.NO_MIRROR_METADATA, true)
+            tree?.getProp("customBind")?.addMetadata(KeybindMetadata.NO_MIRROR, true)
             KeybindManager.unregister(customBind)
             addDependency("arrows", null) {
                 if (isCustom || font != Font.Minecraft) Property.Display.DISABLED else Property.Display.SHOWN
@@ -215,7 +221,7 @@ class KeystrokesHud : Hud(
             addDependency("cpsMode", null) {
                 if (showClicks) Property.Display.SHOWN else Property.Display.DISABLED
             }
-            for (option in listOf("spaceH", "spaceLineW", "spaceLineH")) {
+            for (option in listOf("spaceH", "spaceLineW", "spaceLineH", "jumpPulse")) {
                 addDependency(option, null) {
                     if (showJump) Property.Display.SHOWN else Property.Display.DISABLED
                 }
@@ -273,14 +279,12 @@ class KeystrokesHud : Hud(
     }
 
     private fun pushTextToDesigner() {
-        textColor = unpressedText.rawArgb
-        textChroma = unpressedText.chroma
-        textChromaSpeed = unpressedText.chromaSpeed
+        textPolyColor = unpressedText
     }
 
     private fun pullTextFromDesigner(): Boolean {
         if (textColor == unpressedText.rawArgb && textChroma == unpressedText.chroma && textChromaSpeed == unpressedText.chromaSpeed) return false
-        unpressedText = PolyColor(textColor, textChroma, textChromaSpeed)
+        unpressedText = textPolyColor
         keys.rev.value++
         return true
     }
@@ -329,7 +333,7 @@ class KeystrokesHud : Hud(
         poll(keys.left, o.keyLeft)
         poll(keys.back, o.keyDown)
         poll(keys.right, o.keyRight)
-        poll(keys.jump, o.keyJump)
+        if (jumpPulse) pollTo(keys.jump, if (isReal && jumpShown(o.keyJump, now)) 1f else 0f) else poll(keys.jump, o.keyJump)
         poll(keys.attack, o.keyAttack)
         poll(keys.use, o.keyUse)
         poll(keys.sprint, o.keySprint)
@@ -346,6 +350,21 @@ class KeystrokesHud : Hud(
             pollCps(keys.useClicks, keys.useCps)
         }
         return changed
+    }
+
+    private fun jumpShown(key: KeyMapping, now: Long): Boolean {
+        val held = if (perTick) key.isDown else key.isHeld()
+        if (!held) {
+            keys.jumpWasHeld = false
+            return false
+        }
+        if (!keys.jumpWasHeld) {
+            keys.jumpWasHeld = true
+            keys.jumpHeldSince = now - JUMP_HOLD_BACKDATE_NS
+        }
+        val last = LocalJump.lastNanos
+        val since = now - last
+        return last - keys.jumpHeldSince < 0 || since < JUMP_PULSE_NS || since > JUMP_IDLE_NS
     }
 
     private fun screenOpen(): Boolean = Platform.screen().current<Any?>() != null
@@ -398,13 +417,13 @@ class KeystrokesHud : Hud(
             return
         }
 
-        PolyColumn(gap = gap) {
+        NodeColumn(gap = gap) {
             for (row in rows) when (row) {
                 ROW_MOVEMENT -> {
-                    PolyBox(modifier = PolyModifier.size(rowW, keyH)) {
+                    NodeBox(modifier = PolyModifier.size(rowW, keyH)) {
                         Key(if (useArrows) UP else o.keyUp.label(), keys.forward, keyW, keyH, PolyAlign.Center)
                     }
-                    PolyRow(gap = gap) {
+                    NodeRow(gap = gap) {
                         Key(if (useArrows) LEFT else o.keyLeft.label(), keys.left, keyW, keyH)
                         Key(if (useArrows) DOWN else o.keyDown.label(), keys.back, keyW, keyH)
                         Key(if (useArrows) RIGHT else o.keyRight.label(), keys.right, keyW, keyH)
@@ -413,7 +432,7 @@ class KeystrokesHud : Hud(
 
                 ROW_SPACEBAR -> SpaceKey(keys.jump, rowW, spaceKeyH)
 
-                ROW_MOUSE -> PolyRow(gap = gap) {
+                ROW_MOUSE -> NodeRow(gap = gap) {
                     ClickKey(o.keyAttack.label(), keys.attack, keys.attackCps.value, clickW, keyH)
                     ClickKey(o.keyUse.label(), keys.use, keys.useCps.value, clickW2, keyH)
                 }
@@ -447,10 +466,10 @@ class KeystrokesHud : Hud(
         val color = keyBg(progress)
         val radius = keyRadius
         if (color.alpha == 0) return
-        PolyCanvas(PolyModifier.size(w, h)) { x, y, cw, ch ->
+        NodeCanvas(PolyModifier.size(w, h)) { x, y, cw, ch ->
             deviceTransform()?.get(0)?.let { if (it > 0f && abs(it - keys.px.value) > 1e-3f) keys.px.value = it }
-            val r = snapToPixels(this, x, y, cw, ch)
-            rect(r[0], r[1], r[2] - r[0], r[3] - r[1], color, radius.coerceAtLeast(0f))
+            val r = snappedRect(x, y, cw, ch)
+            rect(r[0], r[1], r[2], r[3], color, radius.coerceAtLeast(0f))
         }
     }
 
@@ -469,7 +488,7 @@ class KeystrokesHud : Hud(
     private fun Key(label: String, progress: KeyFade, w: Float, h: Float, align: PolyAlign? = null, sub: String? = null) {
         keys.rev.value
         val fg = keyFg(progress.text.value)
-        PolyBox(modifier = keyModifier(w, h, align)) {
+        NodeBox(modifier = keyModifier(w, h, align)) {
             KeyBackground(progress.bg.value, w, h)
             val subScale = textScale * CPS_SCALE
             if (font == Font.Minecraft) {
@@ -482,7 +501,7 @@ class KeystrokesHud : Hud(
             } else if (sub == null) {
                 KeyText(label, fg, textScale)
             } else {
-                PolyColumn(gap = LINE_GAP * textScale, modifier = PolyModifier.align(PolyAlign.Center)) {
+                NodeColumn(gap = LINE_GAP * textScale, modifier = PolyModifier.align(PolyAlign.Center)) {
                     KeyText(label, fg, textScale)
                     KeyText(sub, fg, subScale)
                 }
@@ -495,7 +514,7 @@ class KeystrokesHud : Hud(
         val text = applyCase(raw)
         val visibleW = (McFontQueue.measureTextWidth(text, scale) - scale).coerceAtLeast(0f)
         val leftPad = ((w - visibleW) / 2f).coerceAtLeast(0f)
-        PolyMcText(
+        NodeMcText(
             text,
             color = color,
             shadow = showShadow,
@@ -507,7 +526,7 @@ class KeystrokesHud : Hud(
     @Composable
     private fun KeyText(raw: String, color: PolyColor, scale: Float) {
         val text = applyCase(raw)
-        PolyText(
+        NodeText(
             text,
             color = color,
             fontSize = FONT * scale,
@@ -520,9 +539,9 @@ class KeystrokesHud : Hud(
     private fun SpaceKey(progress: KeyFade, w: Float, h: Float) {
         keys.rev.value
         val fg = keyFg(progress.text.value)
-        PolyBox(modifier = keyModifier(w, h)) {
+        NodeBox(modifier = keyModifier(w, h)) {
             KeyBackground(progress.bg.value, w, h)
-            PolyCanvas(PolyModifier.size(w, h)) { x, y, cw, ch ->
+            NodeCanvas(PolyModifier.size(w, h)) { x, y, cw, ch ->
                 val s = textScale
                 val half = spaceLineW * s / 2f
                 val thickness = spaceLineH * s
@@ -586,6 +605,9 @@ private class KeyState {
 
     val custom = KeyFade()
 
+    var jumpWasHeld = false
+    var jumpHeldSince = 0L
+
     val rev = mutableStateOf(0)
 
     val px = mutableStateOf(0f)
@@ -593,4 +615,15 @@ private class KeyState {
     var dirty = false
 
     var lastNanos = System.nanoTime()
+}
+
+object LocalJump {
+    @JvmStatic
+    var lastNanos = System.nanoTime() - JUMP_IDLE_NS
+        private set
+
+    @JvmStatic
+    fun onJump(entity: Any) {
+        if (entity === mc.player) lastNanos = System.nanoTime()
+    }
 }

@@ -1,11 +1,13 @@
 package org.polyfrost.evergreenhud.client.hud
 
-import org.polyfrost.evergreenhud.client.ClientDamageEntityEvent
+import net.minecraft.world.entity.Entity
 import org.polyfrost.evergreenhud.client.utils.GenericNumberHud
 import org.polyfrost.evergreenhud.client.utils.calculateReachDistanceToEntity
+import org.polyfrost.evergreenhud.client.utils.settledAttackHandler
 import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Text
-import org.polyfrost.oneconfig.api.event.v1.eventHandler
+import org.polyfrost.oneconfig.api.event.v1.events.AttackEntityEvent
+import org.polyfrost.oneconfig.api.event.v1.invoke.EventHandler
 import org.polyfrost.oneconfig.utils.v1.dsl.mc
 import kotlin.time.Duration.Companion.seconds
 
@@ -29,23 +31,26 @@ class ReachHud : GenericNumberHud(
 
     private var lastTime = 0L
 
+    private var handler: EventHandler<*>? = null
+
     private val hideAfterMillis get() = (hideAfter * 1000f).toLong()
 
     override fun setup() {
         super.setup()
-        eventHandler { event: ClientDamageEntityEvent ->
-            if (event.attacker == mc.player) {
-                val reach = calculateReachDistanceToEntity(event.target)
+        handler = settledAttackHandler { event: AttackEntityEvent ->
+            if (event.cancelled) return@settledAttackHandler
+            val target = event.getTarget<Any>() as? Entity ?: return@settledAttackHandler
+            val player = mc.player
+            if (player != null && event.getPlayer<Any>() == player && !player.isSpectator) {
+                val reach = calculateReachDistanceToEntity(target)
                 if (reach == 0f) {
-                    return@eventHandler false
+                    return@settledAttackHandler
                 }
 
                 this.value = reach
                 this.lastTime = System.currentTimeMillis()
                 updateWithNumber(reach)
             }
-
-            return@eventHandler false
         }
 
         if (isReal) {
@@ -55,6 +60,12 @@ class ReachHud : GenericNumberHud(
                 updateAndRecalculate()
             }
         }
+    }
+
+    override fun remove() {
+        super.remove()
+        handler?.unregister()
+        handler = null
     }
 
     override fun getText(): String? {

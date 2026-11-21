@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud
 
 import androidx.compose.runtime.Composable
@@ -9,13 +11,13 @@ import net.minecraft.world.entity.HumanoidArm
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
-import org.polyfrost.compose.composables.PolyColumn
-import org.polyfrost.compose.composables.PolyMcText
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
+import org.polyfrost.compose.composables.NodeColumn
+import org.polyfrost.compose.composables.NodeMcText
+import org.polyfrost.compose.composables.NodeRow
+import org.polyfrost.compose.composables.NodeText
 import org.polyfrost.compose.composables.PolyModifier
-import org.polyfrost.compose.composables.PolyRow
-import org.polyfrost.compose.composables.PolyText
 import org.polyfrost.compose.composables.absoluteAt
 import org.polyfrost.compose.composables.align
 import org.polyfrost.compose.composables.padding
@@ -40,10 +42,12 @@ import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.hud.v1.HudManager
 import org.polyfrost.oneconfig.utils.v1.dsl.mc
 import kotlin.math.ceil
 import kotlin.math.roundToInt
+import kotlin.time.Duration.Companion.milliseconds
 
 private const val TEXT_GAP = 2f
 private const val FONT_SIZE = 8f
@@ -151,6 +155,11 @@ class ArmorHud : Hud(
 
     private var rev = mutableStateOf(0)
 
+    //? if > 1.8.9 {
+    private var countCache: Map<Item, Int>? = null
+    //?} else
+    //private var countCache: Map<Pair<Item, Int>, Int>? = null
+
     override fun defaultPosition(): Pair<Float, Float> {
         val (width, height) = defaultSize()
         val hotbarLeft = (HudManager.guiScreenWidth - HOTBAR_WIDTH) / 2f
@@ -196,9 +205,13 @@ class ArmorHud : Hud(
         }
     }
 
+    override fun updateFrequency(): Long = if (isReal) 50.milliseconds.inWholeNanoseconds else -1L
+
     override fun update(): Boolean {
+        countCache = null
         val next = buildEntries()
-        if (next.size == entries.value.size && next.zip(entries.value).all { (a, b) -> a.sameAs(b) }) return false
+        val current = entries.value
+        if (next.size == current.size && next.indices.all { next[it].sameAs(current[it]) }) return false
         entries.value = next
         return true
     }
@@ -283,33 +296,41 @@ class ArmorHud : Hud(
 
     private fun arrowCount(): Int {
         if (!isReal) return 64
-        val player = mc.player ?: return 0
-        val inv = player.inventory
-        var count = 0
-        for (i in 0 until inv.containerSize) {
-            val s = inv.getItem(i)
-            //? if > 1.8.9 {
-            if (s.item == Items.ARROW || s.item == Items.SPECTRAL_ARROW || s.item == Items.TIPPED_ARROW) count += s.count
-            //?} else
-            //if (s != null && s.item == Items.ARROW) count += s.count
-        }
-        return count
+        //? if > 1.8.9 {
+        return carried(Items.ARROW) + carried(Items.SPECTRAL_ARROW) + carried(Items.TIPPED_ARROW)
+        //?} else
+        //return mc.player?.let { carriedCounts()[Items.ARROW to 0] } ?: 0
     }
 
     //~ if = 1.8.9 'item: Item' -> 'stack: ItemStack'
     private fun carried(item: Item): Int {
         if (!isReal) return 64
-        val inv = mc.player?.inventory ?: return 0
-        var count = 0
-        for (i in 0 until inv.containerSize) {
-            val s = inv.getItem(i)
-            //? if > 1.8.9 {
-            if (s.item == item) count += s.count
-            //?} else
-            //if (s != null && s.item == stack.item && (!stack.item.hasCustomData() || s.metadata == stack.metadata)) count += s.count
-        }
-        return count
+        if (mc.player == null) return 0
+        //? if > 1.8.9 {
+        return carriedCounts()[item] ?: 0
+        //?} else
+        //return carriedCounts()[stack.item to if (stack.item.hasCustomData()) stack.metadata else 0] ?: 0
     }
+
+    //? if > 1.8.9 {
+    private fun carriedCounts(): Map<Item, Int> = countCache ?: HashMap<Item, Int>().also { counts ->
+        val inv = mc.player?.inventory
+        if (inv != null) for (i in 0 until inv.containerSize) {
+            val s = inv.getItem(i)
+            if (!s.isEmpty) counts.merge(s.item, s.count, Int::plus)
+        }
+        countCache = counts
+    }
+    //?} else {
+    /*private fun carriedCounts(): Map<Pair<Item, Int>, Int> = countCache ?: HashMap<Pair<Item, Int>, Int>().also { counts ->
+        val inv = mc.player?.inventory
+        if (inv != null) for (i in 0 until inv.containerSize) {
+            val s = inv.getItem(i) ?: continue
+            counts.merge(s.item to if (s.item.hasCustomData()) s.metadata else 0, s.count, Int::plus)
+        }
+        countCache = counts
+    }
+    *///?}
 
     private fun durabilityColor(percent: Int): Int {
         val p = percent.coerceIn(0, 100) / 100f
@@ -335,9 +356,9 @@ class ArmorHud : Hud(
         }
         val modifier = hudBackground().padding(padLeft, padTop, padRight, padBottom)
 
-        PolyBox(modifier = modifier) {
+        NodeBox(modifier = modifier) {
             if (direction == HORIZONTAL) {
-                PolyRow(gap = padding * scale) {
+                NodeRow(gap = padding * scale) {
                     for (entry in list) Entry(entry, scale, PolyAlign.Center)
                 }
             } else {
@@ -346,7 +367,7 @@ class ArmorHud : Hud(
                     LEFT -> PolyAlign.Right
                     else -> PolyAlign.Center
                 }
-                PolyColumn(gap = padding * scale) {
+                NodeColumn(gap = padding * scale) {
                     for (entry in list) Entry(entry, scale, rowAlign)
                 }
             }
@@ -395,8 +416,8 @@ class ArmorHud : Hud(
         val width = if (horizontal) before + stripWidth + after else stripWidth + gap + labelWidth
         val height = if (horizontal) stripHeight + gap + labelHeight else stripHeight
 
-        PolyBox(modifier = PolyModifier.size(width, height)) {
-            PolyCanvas(PolyModifier.absoluteAt(stripX, stripY).size(stripWidth, stripHeight)) { x, y, _, _ ->
+        NodeBox(modifier = PolyModifier.size(width, height)) {
+            NodeCanvas(PolyModifier.absoluteAt(stripX, stripY).size(stripWidth, stripHeight)) { x, y, _, _ ->
                 VanillaTextures.hotbar()?.drawHotbar(this, x, y, list.size, !horizontal, scale)
             }
 
@@ -464,9 +485,9 @@ class ArmorHud : Hud(
         }
 
         if (stacked) {
-            PolyColumn(gap = gap, modifier = modifier, content = body)
+            NodeColumn(gap = gap, modifier = modifier, content = body)
         } else {
-            PolyRow(gap = gap, modifier = modifier, content = body)
+            NodeRow(gap = gap, modifier = modifier, content = body)
         }
     }
 
@@ -475,14 +496,14 @@ class ArmorHud : Hud(
         val color = PolyColor(entry.textColor, textChroma, textChromaSpeed)
         val text = applyCase(entry.text)
         if (font == Font.Minecraft) {
-            PolyMcText(text, color = color, shadow = showShadow, scale = scale, modifier = modifier)
+            NodeMcText(text, color = color, shadow = showShadow, scale = scale, modifier = modifier)
         } else {
-            PolyText(
+            NodeText(
                 text,
                 color = color,
                 fontSize = FONT_SIZE * scale,
                 shadow = showShadow,
-                shadowColor = PolyColor(shadowColor, shadowChroma, shadowChromaSpeed),
+                shadowColor = shadowPolyColor,
                 shadowOffset = shadowOffsetX,
                 font = getPoppinsFontName(),
                 modifier = modifier,
@@ -490,8 +511,8 @@ class ArmorHud : Hud(
         }
     }
 
-    override fun clone(): Hud = (super.clone() as ArmorHud).also {
-        it.entries = mutableStateOf(emptyList())
-        it.rev = mutableStateOf(0)
+    override fun onCloned() {
+        entries = mutableStateOf(emptyList())
+        rev = mutableStateOf(0)
     }
 }

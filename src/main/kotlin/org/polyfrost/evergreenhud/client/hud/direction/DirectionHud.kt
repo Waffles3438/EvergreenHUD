@@ -1,12 +1,14 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud.direction
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
-import org.polyfrost.compose.composables.PolyMcText
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
+import org.polyfrost.compose.composables.NodeMcText
+import org.polyfrost.compose.composables.NodeText
 import org.polyfrost.compose.composables.PolyModifier
-import org.polyfrost.compose.composables.PolyText
 import org.polyfrost.compose.composables.absoluteAt
 import org.polyfrost.compose.composables.align
 import org.polyfrost.compose.composables.clip
@@ -16,12 +18,13 @@ import org.polyfrost.compose.render.PolyColor
 import org.polyfrost.evergreenhud.client.utils.Facing
 import org.polyfrost.evergreenhud.client.utils.applyCase
 import org.polyfrost.evergreenhud.client.utils.cameraYaw
-import org.polyfrost.evergreenhud.client.utils.copy
+import org.polyfrost.oneconfig.api.config.v1.copy
 import org.polyfrost.oneconfig.api.config.v1.annotations.Color
 import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.platform.v1.Platform
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -137,18 +140,11 @@ class DirectionHud : Hud(
         return (bearing / step).roundToInt() * step
     }
 
-    override fun clone(): Hud = (super.clone() as DirectionHud).apply {
-        view = mutableStateOf(this@DirectionHud.view.value)
-        _staticW = mutableStateOf(this@DirectionHud.staticW)
-        _staticH = mutableStateOf(this@DirectionHud.staticH)
-        markerColor = markerColor.copy()
-        tickColor = tickColor.copy()
-    }
 
     @Composable
     override fun Content() {
         val modifier = hudBackground(PolyModifier.size(compassWidth, compassHeight))
-        PolyBox(modifier = modifier.clip(bgRadius)) {
+        NodeBox(modifier = modifier.clip(bgRadius)) {
             Compass(view.value)
         }
     }
@@ -157,7 +153,7 @@ class DirectionHud : Hud(
     private fun Compass(view: View) {
         val bearing = view.bearing
         val width = compassWidth
-        val fg = PolyColor(textColor, textChroma, textChromaSpeed)
+        val fg = textPolyColor
 
         val headingHeight = if (view.showHeading) LINE * textScale else 0f
         val ribbonHeight = compassHeight - headingHeight
@@ -193,7 +189,7 @@ class DirectionHud : Hud(
 
     @Composable
     private fun Ticks(view: View, width: Float, height: Float, top: Float, tickStrip: Float) {
-        PolyCanvas(PolyModifier.size(width, height).absoluteAt(0f, top)) { x, y, w, h ->
+        NodeCanvas(PolyModifier.size(width, height).absoluteAt(0f, top)) { x, y, w, h ->
             val centreX = x + w / 2f
             val bottom = y + h
             val halfSpan = view.span / 2f
@@ -219,9 +215,9 @@ class DirectionHud : Hud(
     @Composable
     private fun Label(raw: String, color: PolyColor, width: Float, height: Float, x: Float, y: Float) {
         val text = applyCase(raw)
-        PolyBox(modifier = PolyModifier.size(width, height).absoluteAt(x, y)) {
+        NodeBox(modifier = PolyModifier.size(width, height).absoluteAt(x, y)) {
             if (font == Font.Minecraft) {
-                PolyMcText(
+                NodeMcText(
                     text,
                     color = color,
                     shadow = showShadow,
@@ -229,13 +225,13 @@ class DirectionHud : Hud(
                     modifier = PolyModifier.align(PolyAlign.Center),
                 )
             } else {
-                PolyText(
+                NodeText(
                     text,
                     color = color,
                     fontSize = FONT * textScale,
                     font = getPoppinsFontName(),
                     shadow = showShadow,
-                    shadowColor = PolyColor(shadowColor, shadowChroma, shadowChromaSpeed),
+                    shadowColor = shadowPolyColor,
                     shadowOffset = shadowOffsetX,
                     modifier = PolyModifier.align(PolyAlign.Center),
                 )

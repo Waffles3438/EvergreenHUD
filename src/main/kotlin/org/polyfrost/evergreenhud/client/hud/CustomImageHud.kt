@@ -1,8 +1,10 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
-import org.polyfrost.compose.composables.PolyCanvas
+import org.polyfrost.compose.composables.NodeCanvas
 import org.polyfrost.compose.composables.PolyModifier
 import org.polyfrost.compose.composables.size
 import org.polyfrost.compose.render.FilterQuality
@@ -13,12 +15,17 @@ import org.polyfrost.oneconfig.api.config.v1.annotations.File
 import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
+import org.polyfrost.oneconfig.api.ui.v1.components.fromFile
 import org.polyfrost.oneconfig.api.hud.v1.HudManager
 import kotlin.math.min
+import java.io.File as JFile
 
 private const val DEFAULT_SIDE = 48f
 
 private const val MAX_FILE_BYTES = 16L * 1024L * 1024L
+
+private const val FILE_CHECK_MS = 1000L
 
 private val PLACEHOLDER_COLOR = PolyColor(0x40FFFFFF)
 private val PLACEHOLDER_OUTLINE = PolyColor(0x80FFFFFF.toInt())
@@ -63,6 +70,9 @@ class CustomImageHud : Hud(
     @Transient
     private var cachedStamp = 0L
 
+    @Transient
+    private var nextFileCheckMs = 0L
+
     init {
         showBackground = false
     }
@@ -86,9 +96,7 @@ class CustomImageHud : Hud(
         releaseImage()
     }
 
-    override fun clone(): Hud = (super.clone() as CustomImageHud).apply {
-        _staticW = mutableStateOf(this@CustomImageHud.staticW)
-        _staticH = mutableStateOf(this@CustomImageHud.staticH)
+    override fun onCloned() {
         cachedImage = null
         cachedPath = null
         cachedStamp = 0L
@@ -97,7 +105,7 @@ class CustomImageHud : Hud(
     @Composable
     override fun Content() {
         val sizeModifier = PolyModifier.size(scaledWidth, scaledHeight)
-        PolyCanvas(sizeModifier) { x, y, w, h -> draw(x, y, w, h) }
+        NodeCanvas(sizeModifier) { x, y, w, h -> draw(x, y, w, h) }
     }
 
     private fun RenderContext.draw(x: Float, y: Float, width: Float, height: Float) {
@@ -150,16 +158,20 @@ class CustomImageHud : Hud(
             return null
         }
 
-        val file = java.io.File(path)
+        val now = System.currentTimeMillis()
+        if (path == cachedPath && now < nextFileCheckMs) return cachedImage
+        nextFileCheckMs = now + FILE_CHECK_MS
+
+        val file = JFile(path)
         val stamp = if (file.isFile) file.lastModified() else -1L
         if (path == cachedPath && stamp == cachedStamp) return cachedImage
 
         releaseImage()
         cachedPath = path
         cachedStamp = stamp
-        if (stamp < 0L || file.length() > MAX_FILE_BYTES) return null
+        if (stamp < 0L) return null
 
-        cachedImage = PolyBitmap.decode(file.readBytes())
+        cachedImage = PolyBitmap.fromFile(file.toPath(), MAX_FILE_BYTES)
         return cachedImage
     }
 

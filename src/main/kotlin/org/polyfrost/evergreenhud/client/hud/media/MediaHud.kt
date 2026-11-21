@@ -1,17 +1,18 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud.media
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import org.polyfrost.compose.composables.PolyBox
+import org.polyfrost.compose.composables.NodeBox
 import org.polyfrost.compose.composables.PolyModifier
 import org.polyfrost.compose.composables.padding
 import org.polyfrost.compose.composables.size
 import org.polyfrost.compose.render.PolyColor
 import org.polyfrost.evergreenhud.client.utils.applyCase
-import org.polyfrost.evergreenhud.client.utils.copy
+import org.polyfrost.oneconfig.api.config.v1.copy
 import org.polyfrost.evergreenhud.client.utils.media.MediaCommand
 import org.polyfrost.evergreenhud.client.utils.media.MediaInfo
 import org.polyfrost.evergreenhud.client.utils.media.MediaService
@@ -23,12 +24,14 @@ import org.polyfrost.oneconfig.api.config.v1.annotations.Keybind
 import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.config.v1.annotations.Text
-import org.polyfrost.oneconfig.api.event.v1.eventHandler
-import org.polyfrost.oneconfig.api.event.v1.events.MouseInputEvent
-import org.polyfrost.oneconfig.api.event.v1.invoke.EventHandler
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.hud.v1.HudManager
+import org.polyfrost.oneconfig.api.hud.v1.HudMouseButton
+import org.polyfrost.oneconfig.api.hud.v1.clickRegion
+import org.polyfrost.oneconfig.api.hud.v1.hoverRegion
+import org.polyfrost.oneconfig.api.hud.v1.removeClickRegion
 import org.polyfrost.oneconfig.api.platform.v1.Platform
 import org.polyfrost.oneconfig.api.ui.v1.keybind.KeybindHelper
 import org.polyfrost.oneconfig.api.ui.v1.keybind.OneConfigKeybind
@@ -226,10 +229,16 @@ class MediaHud : Hud(
 
     private var hovered = mutableIntStateOf(-1)
 
-    private var scrollMs = mutableLongStateOf(0L)
+    private var scrollOffset = mutableFloatStateOf(0f)
 
     @Transient
     private var scrollStart = 0L
+
+    @Transient
+    private var scrollTitle: String? = null
+
+    @Transient
+    private var offscreen = false
 
     @Transient
     private var shownPosition = 0.0
@@ -242,9 +251,6 @@ class MediaHud : Hud(
 
     @Transient
     private var textCache: Pair<List<Any>, Pair<String, String>>? = null
-
-    @Transient
-    private var handlers = ArrayList<EventHandler<*>>(2)
 
     @Transient
     private var acquired = false
@@ -280,10 +286,6 @@ class MediaHud : Hud(
         if (acquired) return
         acquired = true
         MediaService.acquire()
-        handlers.add(eventHandler { (x, y): MouseInputEvent.Moved -> hovered.intValue = buttonAt(x, y) })
-        handlers.add(eventHandler { (button, state): MouseInputEvent ->
-            if (button <= 1 && state == MouseInputEvent.PRESSED) click()
-        })
     }
 
     private fun applySources() {
@@ -296,30 +298,40 @@ class MediaHud : Hud(
     }
 
     override fun remove() {
-        for (handler in handlers) handler.unregister()
-        handlers.clear()
+        clearButtons()
         if (acquired) MediaService.release()
         acquired = false
         shownWidth = 0f
     }
 
     override fun update(): Boolean {
-        if (isReal) shownWidth = if (hidden || card.value == null) 0f else scaledWidth
-        if (hovered.intValue != -1 && !screenOpen()) hovered.intValue = -1
-        val next = read()
         val now = System.currentTimeMillis()
-        if (next?.title != card.value?.title) scrollStart = now
-        scrollMs.longValue = if (next != null && titleOverflows(next.title, cardFont(), if (isStatic) cardTextWidth(next) else MediaCardLayout.MAX_TEXT_WIDTH)) now - scrollStart else 0L
-        if (onlyInGuis && !screenOpen()) popStart = now
+        offscreen = onlyInGuis && !screenOpen()
+        if (offscreen) popStart = now
         pop.floatValue = if (onlyInGuis && popIn && !HudManager.isEditing) ((now - popStart) / POP_MS).coerceIn(0f, 1f) else 1f
+        val next = read()
+        if (isReal) shownWidth = if (hidden || next == null) 0f else scaledWidth
+        trackTitle(next?.title, now)
+        if (offscreen) return false
+        scrollOffset.floatValue = if (next == null) 0f else {
+            val textWidth = if (isStatic) cardTextWidth(next) else MediaCardLayout.MAX_TEXT_WIDTH
+            titleScrollOffset(next.title, cardFont(), textWidth, now - scrollStart, titleScroll == SCROLL_BOUNCE)
+        }
         val nextStyle = next?.let(::cardStyle)
         val changed = next != card.value || nextStyle != style.value
         card.value = next
         style.value = nextStyle
+        syncButtons(next)
         return changed
     }
 
-    override fun updateFrequency(): Long = SCROLL_STEP_MS.milliseconds.inWholeNanoseconds
+    private fun trackTitle(title: String?, now: Long) {
+        if (title == scrollTitle) return
+        scrollTitle = title
+        scrollStart = now
+    }
+
+    override fun updateFrequency(): Long = if (offscreen && screenOpen()) -1L else SCROLL_STEP_MS.milliseconds.inWholeNanoseconds
 
     override fun shouldShow(): Boolean {
         lastDrawCheck = System.nanoTime()
@@ -384,7 +396,7 @@ class MediaHud : Hud(
             else -> null
         }
         val base = album?.let { PolyColor(adjustColor(it, albumTextSaturation / 100f, albumTextLightness / 100f)) }
-            ?: PolyColor(textColor, textChroma, textChromaSpeed)
+            ?: textPolyColor
         val custom = textSource == TEXT_CUSTOM
         val title = if (custom) titleColor else base
         return MediaCardColors(
@@ -456,23 +468,47 @@ class MediaHud : Hud(
 
     private fun screenOpen(): Boolean = Platform.screen().current<Any?>() != null
 
-    private fun buttonAt(windowX: Float, windowY: Float): Int {
-        if (card.value == null || hidden || HudManager.isEditing || !drawn()) return -1
-        val screen = Platform.screen()
-        val gx = windowX * HudManager.guiScreenWidth / screen.windowWidth().coerceAtLeast(1)
-        val gy = windowY * HudManager.guiScreenHeight / screen.windowHeight().coerceAtLeast(1)
+    private fun syncButtons(state: MediaCardState?) {
+        if (!isReal || state == null || hidden) {
+            clearButtons()
+            return
+        }
         val scale = cardScale
-        val hudScale = effectiveScale.coerceAtLeast(0.01f)
         val inset = MediaCardLayout.INSET * scale
-        val lx = ((gx - x) / hudScale - padLeft - inset) / scale
-        val ly = ((gy - y) / hudScale - padTop - inset) / scale
-        return MediaCardLayout.buttonAt(lx, ly, showAlbumArt, cardTextWidth(card.value ?: return -1), seekPosition)
+        val textWidth = cardTextWidth(state)
+        var over = -1
+        for (button in BUTTON_PREVIOUS..BUTTON_NEXT) {
+            val bounds = MediaCardLayout.buttonBounds(button, showAlbumArt, textWidth, seekPosition)
+            val x = padLeft + inset + bounds.left * scale
+            val y = padTop + inset + bounds.top * scale
+            val w = bounds.width * scale
+            val h = bounds.height * scale
+            val hit = if (enabled(state, button)) {
+                clickRegion(BUTTON_REGIONS[button], x, y, w, h, anyScreen = true, buttons = CLICK_BUTTONS) { activate(button) }
+            } else {
+                hoverRegion(BUTTON_REGIONS[button], x, y, w, h, anyScreen = true)
+            }
+            if (hit) over = button
+        }
+        hovered.intValue = over
     }
 
-    private fun click() {
+    private fun clearButtons() {
+        for (region in BUTTON_REGIONS) removeClickRegion(region)
+        hovered.intValue = -1
+    }
+
+    private fun enabled(state: MediaCardState, button: Int): Boolean = when (button) {
+        BUTTON_PREVIOUS -> state.canPrevious
+        BUTTON_TOGGLE -> state.canToggle
+        BUTTON_NEXT -> state.canNext
+        else -> false
+    }
+
+    private fun activate(button: Int) {
         val state = card.value ?: return
-        if (!screenOpen() || !drawn()) return
-        when (hovered.intValue) {
+        if (!drawn()) return
+        when (button) {
             BUTTON_PREVIOUS -> if (state.canPrevious) MediaService.send(MediaCommand.Previous)
             BUTTON_TOGGLE -> if (state.canToggle) MediaService.send(MediaCommand.Toggle)
             BUTTON_NEXT -> if (state.canNext) MediaService.send(MediaCommand.Next)
@@ -490,14 +526,14 @@ class MediaHud : Hud(
         val box = if (backdrop != null) PolyModifier else hudBackground()
         val sized = if (isStatic) box.size(staticW, staticH) else box
         val modifier = sized.padding(padLeft + inset, padTop + inset, padRight + inset, padBottom + inset)
-        PolyBox(modifier = modifier) {
+        NodeBox(modifier = modifier) {
             MediaCard(
                 state = current,
                 style = cardStyle,
                 fontName = cardFont(),
                 shadow = showShadow,
                 hovered = hovered.intValue,
-                scrollMs = scrollMs.longValue,
+                scrollOffset = scrollOffset.floatValue,
                 scale = scale,
                 textWidth = textWidth,
                 backdrop = backdrop,
@@ -519,7 +555,7 @@ class MediaHud : Hud(
         return MediaCardBackdrop(
             bounds = bounds,
             radius = if (showColor || artBackground) bgRadius / scale else 0f,
-            color = if (showColor) PolyColor(bgColor, bgChroma, bgChromaSpeed) else null,
+            color = if (showColor) bgPolyColor else null,
             art = if (artBackground) state.art else null,
             artBlur = artBackgroundBlur,
             artAlpha = artBackgroundOpacity / 100f,
@@ -531,30 +567,27 @@ class MediaHud : Hud(
     companion object {
         @Volatile
         internal var shownWidth = 0f
+
+        private val BUTTON_REGIONS = listOf("media_previous", "media_toggle", "media_next")
+
+        private val CLICK_BUTTONS = setOf(HudMouseButton.Left, HudMouseButton.Right)
     }
 
-    override fun clone(): Hud = (super.clone() as MediaHud).also {
-        it.accentColor = accentColor.copy()
-        it.titleColor = titleColor.copy()
-        it.artistColor = artistColor.copy()
-        it.timeColor = timeColor.copy()
-        it.controlColor = controlColor.copy()
-        it.glyphColor = glyphColor.copy()
-        it._staticW = mutableStateOf(staticW)
-        it._staticH = mutableStateOf(staticH)
-        it.card = mutableStateOf(null)
-        it.style = mutableStateOf(null)
-        it.pop = mutableFloatStateOf(1f)
-        it.popStart = 0L
-        it.hovered = mutableIntStateOf(-1)
-        it.scrollMs = mutableLongStateOf(0L)
-        it.scrollStart = 0L
-        it.shownPosition = 0.0
-        it.shownAt = 0L
-        it.shownTitle = null
-        it.textCache = null
-        it.handlers = ArrayList(2)
-        it.acquired = false
+    override fun onCloned() {
+        card = mutableStateOf(null)
+        style = mutableStateOf(null)
+        pop = mutableFloatStateOf(1f)
+        popStart = 0L
+        hovered = mutableIntStateOf(-1)
+        scrollOffset = mutableFloatStateOf(0f)
+        scrollStart = 0L
+        scrollTitle = null
+        offscreen = false
+        shownPosition = 0.0
+        shownAt = 0L
+        shownTitle = null
+        textCache = null
+        acquired = false
     }
 }
 

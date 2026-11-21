@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud
 
 import androidx.compose.runtime.Composable
@@ -8,12 +10,12 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 //? if = 1.8.9
 //import net.minecraft.world.level.block.Blocks
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyColumn
-import org.polyfrost.compose.composables.PolyMcText
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeColumn
+import org.polyfrost.compose.composables.NodeMcText
+import org.polyfrost.compose.composables.NodeRow
+import org.polyfrost.compose.composables.NodeText
 import org.polyfrost.compose.composables.PolyModifier
-import org.polyfrost.compose.composables.PolyRow
-import org.polyfrost.compose.composables.PolyText
 import org.polyfrost.compose.composables.align
 import org.polyfrost.compose.composables.padding
 import org.polyfrost.compose.layout.PolyAlign
@@ -32,6 +34,7 @@ import org.polyfrost.oneconfig.api.event.v1.events.TickEvent
 import org.polyfrost.oneconfig.api.event.v1.invoke.EventHandler
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.hud.v1.HudManager
 import org.polyfrost.oneconfig.utils.v1.dsl.mc
 import kotlin.math.abs
@@ -121,7 +124,7 @@ class ItemTrackerHud : Hud(
         if (!isReal) return
         tickHandler = eventHandler { _: TickEvent.End ->
             track()
-            updateAndRecalculate()
+            if (!hidden || HudManager.isEditing) updateAndRecalculate()
         }
         for (option in listOf("spacing", "textPosition", "showIcon")) {
             addCallback(option) { rev.value++ }
@@ -256,8 +259,8 @@ class ItemTrackerHud : Hud(
         )
         val rowAlign = if (textPosition == RIGHT) PolyAlign.Left else PolyAlign.Right
 
-        PolyBox(modifier = modifier) {
-            PolyColumn(gap = spacing * scale) {
+        NodeBox(modifier = modifier) {
+            NodeColumn(gap = spacing * scale) {
                 for (entry in list) Entry(entry, scale, rowAlign)
             }
         }
@@ -266,7 +269,7 @@ class ItemTrackerHud : Hud(
     @Composable
     private fun Entry(entry: Entry, scale: Float, align: PolyAlign) {
         rev.value
-        PolyRow(gap = if (showIcon) TEXT_GAP * scale else 0f, modifier = PolyModifier.align(align)) {
+        NodeRow(gap = if (showIcon) TEXT_GAP * scale else 0f, modifier = PolyModifier.align(align)) {
             if (textPosition != RIGHT) Text(entry, scale)
             if (showIcon) {
                 ItemIcon(
@@ -282,7 +285,7 @@ class ItemTrackerHud : Hud(
 
     @Composable
     private fun Text(entry: Entry, scale: Float) {
-        PolyRow(
+        NodeRow(
             gap = if (entry.name.isEmpty()) 0f else TEXT_GAP * scale,
             modifier = PolyModifier.align(PolyAlign.Center),
         ) {
@@ -297,14 +300,14 @@ class ItemTrackerHud : Hud(
         val color = PolyColor(argb, textChroma, textChromaSpeed)
         val modifier = PolyModifier.align(PolyAlign.Center)
         if (font == Font.Minecraft) {
-            PolyMcText(text, color = color, shadow = showShadow, scale = scale, modifier = modifier)
+            NodeMcText(text, color = color, shadow = showShadow, scale = scale, modifier = modifier)
         } else {
-            PolyText(
+            NodeText(
                 text,
                 color = color,
                 fontSize = FONT_SIZE * scale,
                 shadow = showShadow,
-                shadowColor = PolyColor(shadowColor, shadowChroma, shadowChromaSpeed),
+                shadowColor = shadowPolyColor,
                 shadowOffset = shadowOffsetX,
                 font = getPoppinsFontName(),
                 modifier = modifier,
@@ -312,12 +315,12 @@ class ItemTrackerHud : Hud(
         }
     }
 
-    override fun clone(): Hud = (super.clone() as ItemTrackerHud).also {
-        it.changes = ArrayList()
-        it.counts = null
-        it.trackedPlayer = null
-        it.tickHandler = null
-        it.entries = mutableStateOf(emptyList())
-        it.rev = mutableStateOf(0)
+    override fun onCloned() {
+        changes = ArrayList()
+        counts = null
+        trackedPlayer = null
+        tickHandler = null
+        entries = mutableStateOf(emptyList())
+        rev = mutableStateOf(0)
     }
 }

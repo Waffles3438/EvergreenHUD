@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud
 
 import androidx.compose.runtime.Composable
@@ -9,11 +11,11 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 //? if > 1.8.9
 import net.minecraft.world.item.component.ItemContainerContents
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
-import org.polyfrost.compose.composables.PolyMcText
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
+import org.polyfrost.compose.composables.NodeMcText
+import org.polyfrost.compose.composables.NodeText
 import org.polyfrost.compose.composables.PolyModifier
-import org.polyfrost.compose.composables.PolyText
 import org.polyfrost.compose.composables.absoluteAt
 import org.polyfrost.compose.composables.background
 import org.polyfrost.compose.composables.size
@@ -41,10 +43,12 @@ import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.hud.v1.HudManager
 import org.polyfrost.oneconfig.api.ui.v1.keybind.KeybindHelper
 import org.polyfrost.oneconfig.api.ui.v1.keybind.OneConfigKeybind
 import org.polyfrost.oneconfig.utils.v1.dsl.mc
+import kotlin.time.Duration.Companion.milliseconds
 
 private const val PLAYER = 0
 private const val ENDER_CHEST = 1
@@ -155,6 +159,14 @@ class InventoryHud : Hud(
 
     private var grid = mutableStateOf<Grid?>(null)
 
+    //~ if = 1.8.9 'List<ItemStack>' -> 'List<ItemStack?>'
+    private var items: List<ItemStack> = emptyList()
+
+    //? if > 1.8.9 {
+    private var shulkerSource: ItemContainerContents? = null
+    private var shulkerItems: List<ItemStack>? = null
+    //?}
+
     private var rev = mutableStateOf(0)
 
     private var _staticW = mutableStateOf(WIDTH)
@@ -207,27 +219,65 @@ class InventoryHud : Hud(
         }
     }
 
+    override fun updateFrequency(): Long = if (isReal) 50.milliseconds.inWholeNanoseconds else -1L
+
     override fun update(): Boolean {
-        val next = whenItemsReady(null) {
-            if (visible) Grid(if (showTitle) titleText() else null, contents().orEmpty()) else null
-        }
+        val next = whenItemsReady(null) { if (visible) nextGrid() else null }
         publishSlots(next)
         keepScaleAcrossNaturalHeight()
 
-        val current = grid.value
-        if (next == null && current == null) return false
-        if (next != null && current != null && next.sameAs(current)) return false
+        if (next === grid.value) return false
         grid.value = next
         return true
     }
 
-    private fun Grid.sameAs(other: Grid): Boolean =
-        title == other.title && items.size == other.items.size &&
-            items.indices.all { ItemStack.matches(items[it], other.items[it]) }
+    private fun nextGrid(): Grid {
+        val title = if (showTitle) titleText() else null
+        val changed = syncContents()
+        val current = grid.value
+        return if (!changed && current != null && current.title == title) current else Grid(title, items)
+    }
+
+    //~ if = 1.8.9 'List<ItemStack>' -> 'List<ItemStack?>'
+    private fun sync(live: List<ItemStack>): Boolean {
+        val old = items
+        if (old.size == live.size && live.indices.all { ItemStack.matches(live[it], old[it]) }) return false
+        //~ if = 1.8.9 'live[i].copy()' -> 'live[i]?.copy()'
+        items = List(live.size) { i -> old.getOrNull(i)?.takeIf { ItemStack.matches(live[i], it) } ?: live[i].copy() }
+        return true
+    }
+
+    private fun syncContents(): Boolean = when (type) {
+        //? if > 1.8.9
+        HELD_SHULKER -> syncShulker()
+        ENDER_CHEST -> sync(if (!isReal) exampleContents else EnderChestTracker.contents().orEmpty())
+        else -> if (!isReal) {
+            sync(exampleContents)
+        } else {
+            val inv = mc.player?.inventory
+            //~ if = 1.8.9 'else ItemStack.EMPTY' -> 'else null'
+            sync(if (inv == null) emptyList() else List(ROWS * COLS) { i -> if (COLS + i < inv.containerSize) inv.getItem(COLS + i) else ItemStack.EMPTY })
+        }
+    }
+
+    //? if > 1.8.9 {
+    private fun syncShulker(): Boolean {
+        val shulker = shulker() ?: return sync(emptyList())
+        val contents = shulker.get(DataComponents.CONTAINER)
+        if (items === shulkerItems && contents == shulkerSource) return false
+        shulkerSource = contents
+        val changed = sync(shulker.shulkerContents())
+        shulkerItems = items
+        return changed
+    }
+    //?}
 
     private fun publishSlots(next: Grid?) {
         //? if > 1.8.9 {
-        if (next == null || type != HELD_SHULKER || !isReal || HudManager.isEditing) return
+        if (next == null || type != HELD_SHULKER || !isReal || HudManager.isEditing) {
+            ShulkerPreview.clearSlots(this)
+            return
+        }
         val scale = effectiveScale
         val content = contentScale
         val top = gridTop()
@@ -246,7 +296,7 @@ class InventoryHud : Hud(
                 ),
             )
         }
-        ShulkerPreview.publishSlots(slots)
+        ShulkerPreview.publishSlots(this, slots)
         //?} else
         //return
     }
@@ -299,20 +349,6 @@ class InventoryHud : Hud(
         //else -> "Inventory"
     }
 
-    //~ if = 1.8.9 'List<ItemStack>?' -> 'List<ItemStack?>?'
-    private fun contents(): List<ItemStack>? = when (type) {
-        //? if > 1.8.9
-        HELD_SHULKER -> shulker()?.shulkerContents()
-        ENDER_CHEST -> if (!isReal) exampleContents else EnderChestTracker.contents()
-        else -> if (!isReal) {
-            exampleContents
-        } else {
-            val inv = mc.player?.inventory
-            //~ if = 1.8.9 '.copy() else ItemStack.EMPTY' -> '?.copy() else null'
-            inv?.let { List(ROWS * COLS) { i -> if (COLS + i < it.containerSize) it.getItem(COLS + i).copy() else ItemStack.EMPTY } }
-        }
-    }
-
     @Composable
     override fun Content() {
         rev.value
@@ -322,9 +358,9 @@ class InventoryHud : Hud(
         val originX = offsetX(content)
         val originY = offsetY(content)
 
-        PolyBox(modifier = hudBackground().size(boxW, boxH)) {
+        NodeBox(modifier = hudBackground().size(boxW, boxH)) {
             if (style == VANILLA) {
-                PolyCanvas(PolyModifier.absoluteAt(0f, 0f).size(boxW, boxH)) { x, y, _, _ ->
+                NodeCanvas(PolyModifier.absoluteAt(0f, 0f).size(boxW, boxH)) { x, y, _, _ ->
                     VanillaTextures.container(type == HELD_SHULKER)
                         ?.drawContainer(this, x + originX, y + originY, ROWS, showTitle, content)
                 }
@@ -337,7 +373,7 @@ class InventoryHud : Hud(
             if (slotBounds && style != VANILLA) {
                 for (row in 0 until ROWS) {
                     for (col in 0 until COLS) {
-                        PolyBox(
+                        NodeBox(
                             modifier = PolyModifier
                                 .absoluteAt(
                                     originX + (EDGE + col * SLOT - boundInset) * content,
@@ -373,21 +409,21 @@ class InventoryHud : Hud(
     @Composable
     private fun Title(raw: String, content: Float, originX: Float, originY: Float) {
         val title = applyCase(raw)
-        val color = PolyColor(textColor, textChroma, textChromaSpeed)
+        val color = textPolyColor
         val modifier = PolyModifier.absoluteAt(originX + EDGE * content, originY + TITLE_Y * content)
-        val shadowCol = PolyColor(shadowColor, shadowChroma, shadowChromaSpeed)
+        val shadowCol = shadowPolyColor
         val outline = showShadow && fullShadow
         if (font == Font.Minecraft) {
-            PolyMcText(title, if (outline) shadowCol else null, color = color, shadow = showShadow && !outline, scale = content, modifier = modifier)
+            NodeMcText(title, if (outline) shadowCol else null, color = color, shadow = showShadow && !outline, scale = content, modifier = modifier)
         } else if (outline) {
             val polyFont = PolyFont(getPoppinsFontName(), FONT_SIZE * content)
             val metrics = polyFont.metrics
-            PolyCanvas(modifier.size(polyFont.measureTextWidth(title), metrics.descent - metrics.ascent)) { x, y, _, _ ->
+            NodeCanvas(modifier.size(polyFont.measureTextWidth(title), metrics.descent - metrics.ascent)) { x, y, _, _ ->
                 textOutline(title, x, y - metrics.ascent, shadowCol, polyFont, content)
                 text(title, x, y - metrics.ascent, color, polyFont)
             }
         } else {
-            PolyText(
+            NodeText(
                 title,
                 color = color,
                 fontSize = FONT_SIZE * content,
@@ -400,11 +436,13 @@ class InventoryHud : Hud(
         }
     }
 
-    override fun clone(): Hud = (super.clone() as InventoryHud).also {
-        it.grid = mutableStateOf(null)
-        it.rev = mutableStateOf(0)
-        it._staticW = mutableStateOf(staticW)
-        it._staticH = mutableStateOf(staticH)
-        it.sizedForHeight = sizedForHeight
+    override fun onCloned() {
+        grid = mutableStateOf(null)
+        items = emptyList()
+        //? if > 1.8.9 {
+        shulkerSource = null
+        shulkerItems = null
+        //?}
+        rev = mutableStateOf(0)
     }
 }

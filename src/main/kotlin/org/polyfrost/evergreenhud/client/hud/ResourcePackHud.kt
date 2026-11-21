@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud
 
 import androidx.compose.runtime.Composable
@@ -21,13 +23,13 @@ import net.ornithemc.osl.resource.loader.api.resource.repository.ClientPackSourc
 import net.ornithemc.osl.resource.loader.api.resource.repository.ResourcePackRepository
 import net.ornithemc.osl.resource.loader.api.resource.repository.ResourcePackSummary as Pack
 *///?}
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyCanvas
-import org.polyfrost.compose.composables.PolyColumn
-import org.polyfrost.compose.composables.PolyMcText
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeCanvas
+import org.polyfrost.compose.composables.NodeColumn
+import org.polyfrost.compose.composables.NodeMcText
+import org.polyfrost.compose.composables.NodeRow
+import org.polyfrost.compose.composables.NodeText
 import org.polyfrost.compose.composables.PolyModifier
-import org.polyfrost.compose.composables.PolyRow
-import org.polyfrost.compose.composables.PolyText
 import org.polyfrost.compose.composables.padding
 import org.polyfrost.compose.composables.size
 import org.polyfrost.compose.mc.McFontQueue
@@ -39,6 +41,7 @@ import org.polyfrost.evergreenhud.client.utils.applyCase
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.utils.v1.dsl.mc
 import org.slf4j.LoggerFactory
 import kotlin.time.Duration.Companion.seconds
@@ -282,10 +285,10 @@ class ResourcePackHud : Hud(
 
         val modifier = hudBackground().padding(padLeft, padTop, padRight, padBottom)
 
-        PolyBox(modifier = modifier) {
-            PolyRow(gap = GAP * scale) {
+        NodeBox(modifier = modifier) {
+            NodeRow(gap = GAP * scale) {
                 Icon(ICON * scale, if (showBackground) bgRadius else 0f)
-                PolyColumn(gap = TITLE_GAP * scale) {
+                NodeColumn(gap = TITLE_GAP * scale) {
                     Line(applyCase(packTitle.value), scale)
                     for (line in lines) Line(line, scale)
                 }
@@ -296,11 +299,11 @@ class ResourcePackHud : Hud(
     @Composable
     private fun Icon(size: Float, radius: Float) {
         val icon = packIcon.value ?: return
-        PolyCanvas(PolyModifier.size(size, size)) { x, y, w, h ->
+        NodeCanvas(PolyModifier.size(size, size)) { x, y, w, h ->
             val corner = radius.coerceIn(0f, minOf(w, h) / 2f)
             if (corner <= 0f) {
                 image(icon, x, y, w, h)
-                return@PolyCanvas
+                return@NodeCanvas
             }
             save()
             clipRRect(x, y, w, h, corner)
@@ -311,27 +314,27 @@ class ResourcePackHud : Hud(
 
     @Composable
     private fun Line(text: String, scale: Float) {
-        val color = PolyColor(textColor, textChroma, textChromaSpeed)
+        val color = textPolyColor
         if (font == Font.Minecraft) {
-            PolyMcText(text, color = color, shadow = showShadow, scale = scale)
+            NodeMcText(text, color = color, shadow = showShadow, scale = scale)
         } else {
-            PolyText(
+            NodeText(
                 text,
                 color = color,
                 fontSize = FONT_SIZE * scale,
                 shadow = showShadow,
-                shadowColor = PolyColor(shadowColor, shadowChroma, shadowChromaSpeed),
+                shadowColor = shadowPolyColor,
                 shadowOffset = shadowOffsetX,
                 font = getPoppinsFontName(),
             )
         }
     }
 
-    override fun clone(): Hud = (super.clone() as ResourcePackHud).also {
-        it.packTitle = mutableStateOf(DEFAULT_TITLE)
-        it.packDescription = mutableStateOf(DEFAULT_DESCRIPTION)
-        it.packIcon = mutableStateOf(null)
-        it.lastPackId = null
-        it.lastIgnoreOverlay = null
+    override fun onCloned() {
+        packTitle = mutableStateOf(DEFAULT_TITLE)
+        packDescription = mutableStateOf(DEFAULT_DESCRIPTION)
+        packIcon = mutableStateOf(null)
+        lastPackId = null
+        lastIgnoreOverlay = null
     }
 }

@@ -1,12 +1,14 @@
+@file:OptIn(ExperimentalOneConfigUiApi::class)
+
 package org.polyfrost.evergreenhud.client.hud.battery
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
-import org.polyfrost.compose.composables.PolyBox
-import org.polyfrost.compose.composables.PolyMcText
+import org.polyfrost.compose.composables.NodeBox
+import org.polyfrost.compose.composables.NodeMcText
+import org.polyfrost.compose.composables.NodeRow
+import org.polyfrost.compose.composables.NodeText
 import org.polyfrost.compose.composables.PolyModifier
-import org.polyfrost.compose.composables.PolyRow
-import org.polyfrost.compose.composables.PolyText
 import org.polyfrost.compose.composables.align
 import org.polyfrost.compose.composables.height
 import org.polyfrost.compose.composables.margin
@@ -18,12 +20,13 @@ import org.polyfrost.compose.render.PolyColor
 import org.polyfrost.evergreenhud.client.utils.applyCase
 import org.polyfrost.evergreenhud.client.utils.capHeight
 import org.polyfrost.evergreenhud.client.utils.battery.Battery
-import org.polyfrost.evergreenhud.client.utils.copy
+import org.polyfrost.oneconfig.api.config.v1.copy
 import org.polyfrost.oneconfig.api.config.v1.annotations.Color
 import org.polyfrost.oneconfig.api.config.v1.annotations.Slider
 import org.polyfrost.oneconfig.api.config.v1.annotations.Switch
 import org.polyfrost.oneconfig.api.hud.v1.Font
 import org.polyfrost.oneconfig.api.hud.v1.Hud
+import org.polyfrost.oneconfig.api.ui.v1.ExperimentalOneConfigUiApi
 import org.polyfrost.oneconfig.api.hud.v1.HudManager
 import kotlin.time.Duration.Companion.seconds
 
@@ -76,6 +79,8 @@ class BatteryHud : Hud(
 
     private var display = mutableStateOf<Display?>(null)
 
+    private var acquired = false
+
     override fun defaultPosition(): Pair<Float, Float> = 0f to 0f
 
     override fun canMergeBackground(): Boolean = true
@@ -86,21 +91,30 @@ class BatteryHud : Hud(
         for (option in listOf("showPercentage", "showTimeRemaining", "hideWhileCharging", "lowThreshold", "chargingColor", "saverColor", "lowColor")) {
             updateWhenChanged(option)
         }
+        if (acquired) return
+        acquired = true
+        Battery.acquire()
+    }
+
+    override fun remove() {
+        if (acquired) Battery.release()
+        acquired = false
     }
 
     override fun update(): Boolean {
+        if (isReal && Battery.latest == null) return false
         val next = read()
         if (next == display.value) return false
         display.value = next
         return true
     }
 
-    override fun updateFrequency(): Long = 1.seconds.inWholeNanoseconds
+    override fun updateFrequency(): Long = if (isReal && Battery.latest == null) -1L else 1.seconds.inWholeNanoseconds
 
     override fun shouldShow(): Boolean = display.value != null
 
     private fun read(): Display? {
-        val live = if (isReal) Battery.get() else EXAMPLE
+        val live = if (isReal) Battery.latest ?: Battery.UnknownBattery else EXAMPLE
         val battery = when {
             live !is Battery.UnknownBattery -> live
             HudManager.isEditing -> EXAMPLE
@@ -145,11 +159,11 @@ class BatteryHud : Hud(
             padRight + (if (hasText && font == Font.Minecraft) BASE_PADDING - MC_TRAILING_SPACE else BASE_PADDING) * scale,
             padBottom + BASE_PADDING * scale,
         )
-        val color = PolyColor(textColor, textChroma, textChromaSpeed)
+        val color = textPolyColor
         val rowModifier = PolyModifier.height(CELL_HEIGHT * scale).align(if (isStatic) alignment else PolyAlign.Center)
 
-        PolyBox(modifier = modifier) {
-            PolyRow(gap = if (hasText) TEXT_GAP * scale else 0f, modifier = rowModifier) {
+        NodeBox(modifier = modifier) {
+            NodeRow(gap = if (hasText) TEXT_GAP * scale else 0f, modifier = rowModifier) {
                 BatteryCell(
                     percent = current.percent,
                     fill = current.fill ?: color,
@@ -168,17 +182,17 @@ class BatteryHud : Hud(
         val rowHeight = CELL_HEIGHT * scale
         if (font == Font.Minecraft) {
             val modifier = topAlign(inkOffset(rowHeight, 0f, MC_INK_HEIGHT * scale))
-            PolyMcText(text, color = color, shadow = showShadow, scale = scale, modifier = modifier)
+            NodeMcText(text, color = color, shadow = showShadow, scale = scale, modifier = modifier)
         } else {
             val polyFont = PolyFont(getPoppinsFontName(), FONT_SIZE * scale)
             val inkTop = -polyFont.metrics.ascent - polyFont.capHeight
             val modifier = topAlign(inkOffset(rowHeight, inkTop, polyFont.capHeight))
-            PolyText(
+            NodeText(
                 text,
                 color = color,
                 fontSize = FONT_SIZE * scale,
                 shadow = showShadow,
-                shadowColor = PolyColor(shadowColor, shadowChroma, shadowChromaSpeed),
+                shadowColor = shadowPolyColor,
                 shadowOffset = shadowOffsetX,
                 font = getPoppinsFontName(),
                 modifier = modifier,
@@ -192,10 +206,8 @@ class BatteryHud : Hud(
     private fun inkOffset(rowHeight: Float, inkTop: Float, inkHeight: Float): Float =
         ((rowHeight - inkHeight) / 2f - inkTop).coerceAtLeast(0f)
 
-    override fun clone(): Hud = (super.clone() as BatteryHud).also {
-        it.chargingColor = chargingColor.copy()
-        it.saverColor = saverColor.copy()
-        it.lowColor = lowColor.copy()
-        it.display = mutableStateOf(null)
+    override fun onCloned() {
+        display = mutableStateOf(null)
+        acquired = false
     }
 }
